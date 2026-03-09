@@ -1,0 +1,777 @@
+# ProofsAnalyze Async Service
+
+Асинхронный FastAPI-сервис для автоматической верификации математических доказательств в формате LaTeX.
+
+Сервис проверяет доказательство в два этапа:
+
+1. **Проверка фактов и теорем** — с обращением к RAG / векторной базе знаний.
+2. **Проверка логической связности** — без RAG, на основе структуры доказательства и пошагового анализа.
+
+Внутри пайплайна работают два LLM-агента:
+
+- **Формулировщик** — строит позитивную интерпретацию доказательства, выделяет факты, анализирует шаги и пытается обосновать корректность.
+- **Критик** — независимо проверяет выводы формулировщика, ищет пропущенные факты, логические разрывы и ошибки применения теорем.
+
+Итогом работы является структурированный вердикт с замечаниями, привязкой к шагам доказательства, статистикой по фазам и полной историей спора агентов.
+
+---
+
+## Основные возможности
+
+- Асинхронный HTTP API на **FastAPI**
+- Поддержка проверки доказательств в формате **LaTeX**
+- Двухэтапная верификация:
+  - факты / теоремы / условия применимости;
+  - логическая связность доказательства
+- **RAG-поиск** по базе математических теорем и фактов
+- **Job-режим** для длительных проверок:
+  - запуск фоновой задачи;
+  - polling статуса;
+  - получение результата после завершения
+- UI для ручной работы:
+  - split-view редактор / preview;
+  - карточки шагов;
+  - замечания;
+  - отображение RAG references
+- Возможность использовать:
+  - **Gemini API**
+  - **Ollama** с локальной LLM
+- Возможность запуска:
+  - локально через `uv`
+  - через `docker compose`
+
+---
+
+## Архитектура
+
+### Общая схема
+
+```text
+LaTeX proof
+   │
+   ▼
+parse_latex_proof()
+   │
+   ▼
+proof_steps
+   │
+   ├── Этап 1: Fact checking (RAG)
+   │      ├── Formulator
+   │      └── Critic
+   │
+   ├── Этап 2: Logic checking (без RAG)
+   │      ├── Formulator
+   │      └── Critic
+   │
+   ▼
+Final verdict
+```
+
+### Основные принципы текущей версии
+
+- HTTP-слой полностью **асинхронный**
+- Долгая верификация уходит в `asyncio.to_thread(...)`, чтобы не блокировать event loop
+- Бизнес-логика проверки сохранена и вынесена в сервисный слой
+- Глобальные синглтоны убраны — зависимости создаются контейнером и внедряются через `Depends`
+- Поддерживается как синхронный запрос-ответ, так и фоновая обработка через job API
+
+---
+
+## Структура проекта
+
+```text
+ProofsAnalyze/
+│
+├── app/
+│   ├── main.py                              # Точка входа FastAPI приложения
+│   │
+│   ├── api/
+│   │   ├── routes.py                        # REST API
+│   │   └── deps.py                          # Dependency injection для роутов
+│   │
+│   ├── core/
+│   │   ├── containers/
+│   │   │   └── container.py                 # Контейнер сервисов и зависимостей
+│   │   │
+│   │   ├── service/
+│   │   │   └── verification_pipeline.py     # Оркестрация двух фаз верификации
+│   │   │
+│   │   ├── agents/
+│   │   │   ├── formulator_agent.py          # Агент-Формулировщик
+│   │   │   └── critic_agent.py              # Агент-Критик
+│   │   │
+│   │   └── clients/
+│   │       └── db/
+│   │           └── rag/
+│   │               ├── build.py             # Построение RAG-базы
+│   │               └── ...                  # RAG-слой / векторный поиск
+│   │
+│   ├── services/
+│   │   ├── proof_application.py             # Асинхронная прикладная логика
+│   │   └── jobs.py                          # In-memory job store
+│   │
+│   └── static/
+│       └── index.html                       # UI
+│
+├── pyproject.toml
+├── uv.lock
+└── README.md
+```
+
+> Внутренние имена файлов могут немного отличаться от ветки к ветке, но логически проект устроен именно так.
+
+---
+
+## Как работает сервис
+
+## 1. Разбор LaTeX-доказательства
+
+Сервис получает LaTeX, извлекает тело доказательства и разбивает его на логические шаги. Для каждого шага сохраняются:
+
+- plain text;
+- исходный LaTeX-фрагмент;
+- предполагаемый тип шага;
+- явное обоснование, если оно указано автором.
+
+Типы шагов обычно включают:
+
+- `definition`
+- `assumption`
+- `assertion`
+- `implication`
+- `conclusion`
+
+---
+
+## 2. Этап проверки фактов
+
+На этом этапе агенты проверяют:
+
+- какие математические факты используются;
+- какие теоремы и определения применяются;
+- соблюдены ли условия применимости;
+- не пропущены ли существенные обоснования.
+
+Формулировщик и Критик работают по раундам до достижения консенсуса или исчерпания лимита раундов.
+
+На этапе проверки фактов используется **RAG**.
+
+---
+
+## 3. Этап проверки логики
+
+На этом этапе анализируются:
+
+- глобальная структура доказательства;
+- последовательность переходов между шагами;
+- наличие логических разрывов;
+- circular reasoning;
+- недостающие промежуточные выводы;
+- соответствует ли финальный вывод поставленной цели.
+
+На этапе проверки логики **RAG не используется**.
+
+---
+
+## 4. Финальный ответ
+
+Сервис возвращает:
+
+- валидность доказательства;
+- confidence score;
+- summary;
+- recommendation по исправлению;
+- разобранные шаги;
+- статистику по фазам;
+- финальные замечания;
+- полную историю спора агентов.
+
+---
+
+# Способы взаимодействия с сервисом
+
+Сервис поддерживает несколько способов использования.
+
+## 1. Через веб-интерфейс
+
+После запуска приложения открой:
+
+```text
+http://127.0.0.1:8000
+```
+
+Во фронтенде доступны:
+
+- ввод LaTeX-доказательства;
+- preview;
+- запуск проверки;
+- просмотр разбивки на шаги;
+- просмотр замечаний;
+- просмотр RAG references;
+- запуск фоновой задачи и polling статуса.
+
+Подходит для ручного тестирования, демо и отладки UX.
+
+---
+
+## 2. Через синхронный API-запрос
+
+Используется, когда нужно дождаться результата в одном HTTP-ответе.
+
+### Эндпоинт
+
+```http
+POST /api/v1/proofs/verify
+```
+
+### Пример запроса
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/proofs/verify" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "proof_id": "lagrange_corollary_001",
+    "latex": "\\begin{proof} Пусть $G$ — конечная группа порядка $n$ ... \\end{proof}",
+    "context": {
+      "topic": "теория групп",
+      "level": "undergraduate",
+      "theorem_type": "algebra"
+    },
+    "max_rounds_per_phase": 3
+  }'
+```
+
+### Когда использовать
+
+- короткие доказательства;
+- backend-to-backend интеграция;
+- локальная отладка;
+- тесты.
+
+---
+
+## 3. Через job API
+
+Используется, когда проверка может быть долгой и не хочется держать клиентский запрос открытым.
+
+### Создать задачу
+
+```http
+POST /api/v1/proofs/jobs
+```
+
+### Проверить статус
+
+```http
+GET /api/v1/proofs/jobs/{job_id}
+```
+
+### Flow
+
+1. Клиент отправляет доказательство в job endpoint
+2. Сервис возвращает `job_id`
+3. Клиент периодически опрашивает статус
+4. После завершения получает итоговый результат
+
+### Пример создания задачи
+
+```bash
+curl -X POST "http://127.0.0.1:8000/api/v1/proofs/jobs" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "proof_id": "proof_job_001",
+    "latex": "\\begin{proof} ... \\end{proof}",
+    "context": {
+      "topic": "математический анализ",
+      "level": "undergraduate"
+    },
+    "max_rounds_per_phase": 3
+  }'
+```
+
+### Пример ответа
+
+```json
+{
+  "job_id": "d6f3f9d0-8c76-4e2f-a8c4-1f70d5f06517",
+  "status": "pending"
+}
+```
+
+### Пример запроса статуса
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/proofs/jobs/d6f3f9d0-8c76-4e2f-a8c4-1f70d5f06517"
+```
+
+---
+
+## 4. Через вызов прикладного сервиса из Python-кода
+
+Если сервис используется как часть более крупной системы, можно вызывать прикладной сервис напрямую.
+
+Примерный сценарий:
+
+```python
+from app.services.proof_application import ProofApplicationService
+
+result = await proof_application.verify(
+    proof_id="proof_001",
+    latex=latex,
+    context={
+        "topic": "линейная алгебра",
+        "level": "undergraduate",
+    },
+    max_rounds_per_phase=3,
+)
+```
+
+> Конкретная сигнатура зависит от текущей реализации `ProofApplicationService`.
+
+---
+
+# API
+
+## `POST /api/v1/proofs/verify`
+
+Синхронная верификация доказательства.
+
+### Request body
+
+```json
+{
+  "proof_id": "string",
+  "latex": "string",
+  "context": {
+    "topic": "теория групп",
+    "level": "undergraduate",
+    "theorem_type": "algebra"
+  },
+  "max_rounds_per_phase": 3
+}
+```
+
+### Response
+
+```json
+{
+  "proof_id": "string",
+  "is_valid": true,
+  "confidence_score": 0.84,
+  "summary": "Доказательство в целом корректно...",
+  "iteration_recommendation": null,
+  "parsed_steps": [
+    {
+      "content": "Рассмотрим циклическую подгруппу...",
+      "content_latex": "Рассмотрим циклическую подгруппу $\\langle g \\rangle$...",
+      "justification": "По определению",
+      "step_type": "assertion",
+      "line_number": 2
+    }
+  ],
+  "phases": {
+    "fact_checking": {
+      "consensus_reached": true,
+      "rounds_taken": 2,
+      "error_count": 0,
+      "warning_count": 1
+    },
+    "logic_checking": {
+      "consensus_reached": true,
+      "rounds_taken": 1,
+      "error_count": 0,
+      "warning_count": 0
+    }
+  },
+  "remarks": [],
+  "debate_history": []
+}
+```
+
+---
+
+## `POST /api/v1/proofs/jobs`
+
+Создание фоновой задачи проверки.
+
+### Response
+
+```json
+{
+  "job_id": "uuid",
+  "status": "pending"
+}
+```
+
+---
+
+## `GET /api/v1/proofs/jobs/{job_id}`
+
+Получение статуса фоновой задачи.
+
+### Возможные статусы
+
+- `pending`
+- `running`
+- `done`
+- `failed`
+
+### Пример ответа для завершённой задачи
+
+```json
+{
+  "job_id": "uuid",
+  "status": "done",
+  "result": {
+    "proof_id": "proof_001",
+    "is_valid": false,
+    "summary": "Обнаружены ошибки применения теоремы...",
+    "remarks": []
+  }
+}
+```
+
+---
+
+## `GET /api/v1/theorems?names=A|B|C`
+
+Получение формулировок теорем по именам.
+
+Полезно для UI или внешнего клиента, если нужно отдельно показать пользователю найденные формулировки.
+
+### Пример
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/theorems?names=Lagrange|Cauchy"
+```
+
+---
+
+## `GET /api/v1/healthz`
+
+Проверка, что сервис поднят.
+
+### Пример ответа
+
+```json
+{
+  "status": "ok"
+}
+```
+
+---
+
+# Контекст верификации
+
+Поле `context` влияет на строгость и интерпретацию доказательства.
+
+## Поддерживаемые поля
+
+| Поле | Тип | Обязательное | Описание |
+|---|---|---:|---|
+| `topic` | `str` | да | Раздел математики |
+| `level` | `str` | да | Уровень строгости: `elementary`, `undergraduate`, `graduate` |
+| `theorem_type` | `str` | нет | Дополнительный фильтр / подсказка для RAG |
+
+### Примеры
+
+```json
+{
+  "topic": "теория групп",
+  "level": "undergraduate"
+}
+```
+
+```json
+{
+  "topic": "математический анализ",
+  "level": "graduate",
+  "theorem_type": "real_analysis"
+}
+```
+
+---
+
+# Локальный запуск
+
+## Требования
+
+- Python 3.11+  
+- `uv`
+- установленная и собранная RAG-база
+- настроенный LLM backend:
+  - либо Gemini API,
+  - либо Ollama
+
+---
+
+## Установка зависимостей
+
+```bash
+uv sync
+```
+
+---
+
+## Построение RAG-базы
+
+```bash
+uv run python -m app.core.clients.db.rag.build
+```
+
+> Эту команду нужно выполнить после первой установки или после изменения корпуса теорем / документов RAG.
+
+---
+
+## Запуск приложения
+
+```bash
+uv run uvicorn app.main:app --reload
+```
+
+После запуска сервис доступен по адресу:
+
+```text
+http://127.0.0.1:8000
+```
+
+---
+
+# Настройка LLM backend
+
+Сервис можно запускать либо с внешним API, либо на локальной модели через Ollama.
+
+## Вариант 1. Gemini API
+
+### Пример `.env`
+
+```env
+APP_ENV=dev
+
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your_api_key
+GEMINI_MODEL=gemini-2.0-flash
+LLM_TEMPERATURE=0.1
+LLM_MAX_TOKENS=4000
+```
+
+---
+
+## Вариант 2. Ollama
+
+Да, **через Ollama сервис запускать можно**, если текущий LLM client / provider abstraction поддерживает локальный backend или если ты добавишь адаптер к нему. Это абсолютно нормальный вариант для локальной разработки, демо и автономного запуска без внешнего API.
+
+### 1. Установить Ollama
+
+Скачать и установить Ollama с официального сайта.
+
+После установки проверь:
+
+```bash
+ollama --version
+```
+
+### 2. Подтянуть модель
+
+Например:
+
+```bash
+ollama pull qwen2.5:14b
+```
+
+или:
+
+```bash
+ollama pull llama3.1:8b
+```
+
+или:
+
+```bash
+ollama pull mistral:7b
+```
+
+### 3. Запустить Ollama
+
+```bash
+ollama serve
+```
+
+По умолчанию API будет доступен на:
+
+```text
+http://127.0.0.1:11434
+```
+
+### 4. Настроить `.env`
+
+```env
+APP_ENV=dev
+
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+OLLAMA_MODEL=qwen2.5:14b
+
+LLM_TEMPERATURE=0.1
+LLM_MAX_TOKENS=4000
+```
+
+Если приложение запускается **не в Docker**, можно использовать:
+
+```env
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+```
+
+Если приложение запускается **в Docker Compose**, чаще нужен:
+
+```env
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+```
+
+Для Linux иногда вместо этого нужно:
+- либо пробросить `extra_hosts`;
+- либо использовать сеть docker host mode;
+- либо поднимать ollama отдельным контейнером в том же compose.
+
+---
+
+# Пример `.env`
+
+## Для Gemini
+
+```env
+APP_ENV=dev
+LOG_LEVEL=INFO
+
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your_api_key
+GEMINI_MODEL=gemini-2.0-flash
+
+LLM_TEMPERATURE=0.1
+LLM_MAX_TOKENS=4000
+```
+
+## Для Ollama
+
+```env
+APP_ENV=dev
+LOG_LEVEL=INFO
+
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=qwen2.5:14b
+
+LLM_TEMPERATURE=0.1
+LLM_MAX_TOKENS=4000
+```
+
+---
+
+# Пример использования результата
+
+```python
+result = ...
+
+if result["is_valid"]:
+    print(result["summary"])
+else:
+    print(result["summary"])
+    print(result["iteration_recommendation"])
+
+    for err in result["remarks"]:
+        if err["severity"] == "error":
+            step = f"шаг {err['step_id']}" if err.get("step_id") is not None else "глобально"
+            phase = "факты" if err["phase"] == "fact_checking" else "логика"
+            print(f"[{phase} | {step}] {err['message']}")
+            if err.get("suggestion"):
+                print(f"  → {err['suggestion']}")
+```
+---
+
+# Рекомендации по использованию
+
+## Когда использовать `POST /verify`
+
+- короткие доказательства;
+- локальная отладка;
+- быстрый интерактивный сценарий.
+
+## Когда использовать job API
+
+- длинные доказательства;
+- медленные модели;
+- Ollama на слабой машине;
+- фронтенд с polling.
+
+---
+
+# Рекомендации по моделям
+
+## Для Gemini
+
+- `gemini-2.0-flash` — быстрый дефолтный вариант
+- более сильные модели — если приоритет на качество
+
+## Для Ollama
+
+- `qwen2.5:7b` — минимально разумно
+- `qwen2.5:14b` — хороший компромисс
+- `llama3.1:8b` — допустимый вариант
+- более крупные модели — если хватает ресурсов
+
+---
+
+# Healthcheck и диагностика
+
+## Проверить, что сервис жив
+
+```bash
+curl http://127.0.0.1:8000/api/v1/healthz
+```
+
+## Проверить, что Ollama доступен
+
+```bash
+curl http://127.0.0.1:11434/api/tags
+```
+
+## Проверить, что модель скачана
+
+```bash
+ollama list
+```
+
+---
+
+# Roadmap / возможные улучшения
+
+- хранение job state не in-memory, а в Redis / Postgres
+- выделение provider abstraction для LLM на отдельный слой
+- поддержка streaming ответов
+- retry / circuit breaker на уровне LLM backend
+- кэширование RAG retrieval
+- метрики и tracing
+- отдельный worker для фоновых задач
+
+---
+
+# Быстрый старт
+
+## Локально с Gemini
+
+```bash
+uv sync
+uv run python -m app.core.clients.db.rag.build
+uv run uvicorn app.main:app --reload
+```
+
+## Локально с Ollama
+
+```bash
+ollama pull qwen2.5:14b
+ollama serve
+
+uv sync
+uv run python -m app.core.clients.db.rag.build
+uv run uvicorn app.main:app --reload
+```

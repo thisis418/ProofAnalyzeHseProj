@@ -1,0 +1,858 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ProofsAnalyze</title>
+
+  <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']],
+        processEscapes: true,
+        packages: {'[+]': ['ams', 'base', 'noerrors', 'noundefined']}
+      },
+      options: {
+        skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+      },
+      startup: {
+        typeset: false
+      }
+    };
+  </script>
+
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script async id="MathJax-script" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #11182c;
+      --panel-2: #18223d;
+      --text: #e8eefc;
+      --muted: #9fb0d3;
+      --border: #2d3b62;
+      --accent: #7c9cff;
+      --accent-2: #4fe0c2;
+      --error: #ff7a7a;
+      --warn: #ffd36e;
+      --ok: #6ce3a3;
+      --info: #8fb1ff;
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: linear-gradient(180deg, #0b1020 0%, #10182d 100%);
+      color: var(--text);
+    }
+
+    .app {
+      max-width: 1500px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .hero {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+
+    .hero h1 {
+      margin: 0;
+      font-size: 32px;
+    }
+
+    .hero p {
+      margin: 6px 0 0;
+      color: var(--muted);
+    }
+
+    .badge {
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(124, 156, 255, 0.14);
+      border: 1px solid rgba(124, 156, 255, 0.4);
+      color: #c9d6ff;
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 20px;
+    }
+
+    .panel {
+      background: rgba(17, 24, 44, 0.95);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel-header {
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .panel-title {
+      font-weight: 700;
+    }
+
+    .panel-subtitle {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .editor-wrap {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      min-height: 540px;
+    }
+
+    textarea {
+      width: 100%;
+      height: 100%;
+      min-height: 540px;
+      resize: vertical;
+      border: 0;
+      outline: none;
+      background: #0d1427;
+      color: var(--text);
+      padding: 18px;
+      font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    .preview {
+      padding: 18px;
+      background: #10172b;
+      border-left: 1px solid var(--border);
+      overflow: auto;
+    }
+
+    .math-box {
+      white-space: pre-wrap;
+      line-height: 1.65;
+      overflow-wrap: anywhere;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      padding: 18px;
+      border-top: 1px solid var(--border);
+      background: rgba(255,255,255,0.02);
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .field label {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .field input,
+    .field select {
+      background: #0d1427;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px 13px;
+      outline: none;
+    }
+
+    .actions {
+      grid-column: span 4;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    button {
+      border: 0;
+      border-radius: 14px;
+      padding: 12px 16px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .primary {
+      background: linear-gradient(135deg, var(--accent), #a67cff);
+      color: white;
+    }
+
+    .secondary {
+      background: #1a2442;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .result-content {
+      padding: 18px;
+    }
+
+    .summary-card {
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02));
+      margin-bottom: 16px;
+    }
+
+    .summary-line {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .pill.ok {
+      background: rgba(108, 227, 163, 0.14);
+      color: var(--ok);
+    }
+
+    .pill.warn {
+      background: rgba(255, 211, 110, 0.14);
+      color: var(--warn);
+    }
+
+    .pill.error {
+      background: rgba(255, 122, 122, 0.14);
+      color: var(--error);
+    }
+
+    .pill.info {
+      background: rgba(143, 177, 255, 0.14);
+      color: var(--info);
+    }
+
+    .section-title {
+      margin: 18px 0 10px;
+      font-size: 18px;
+      font-weight: 800;
+    }
+
+    .steps,
+    .remarks-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .step {
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 14px;
+      background: #0d1427;
+    }
+
+    .step-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    .step-title {
+      font-weight: 800;
+      font-size: 16px;
+      line-height: 1.4;
+    }
+
+    .step-meta {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    .remark {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .remark.error {
+      background: rgba(255,122,122,0.10);
+      border: 1px solid rgba(255,122,122,0.26);
+    }
+
+    .remark.warning {
+      background: rgba(255,211,110,0.10);
+      border: 1px solid rgba(255,211,110,0.26);
+    }
+
+    .remark.info {
+      background: rgba(124,156,255,0.10);
+      border: 1px solid rgba(124,156,255,0.26);
+    }
+
+    .remark-card {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: #0d1427;
+      padding: 12px 14px;
+    }
+
+    .remark-card.error {
+      border-color: rgba(255,122,122,0.35);
+    }
+
+    .remark-card.warning {
+      border-color: rgba(255,211,110,0.35);
+    }
+
+    .remark-card.info {
+      border-color: rgba(124,156,255,0.35);
+    }
+
+    .remark-meta-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+    }
+
+    .remark-message {
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .remark-extra {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .jobs-box {
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
+
+    .job-line {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .theorem-box {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #10172b;
+    }
+
+    .empty {
+      color: var(--muted);
+      font-size: 14px;
+      padding: 8px 0;
+    }
+
+    .divider {
+      height: 1px;
+      background: var(--border);
+      margin: 16px 0;
+    }
+
+    @media (max-width: 1100px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .editor-wrap {
+        grid-template-columns: 1fr;
+      }
+
+      .preview {
+        border-left: 0;
+        border-top: 1px solid var(--border);
+      }
+
+      .controls {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .actions {
+        grid-column: span 2;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .app {
+        padding: 14px;
+      }
+
+      .controls {
+        grid-template-columns: 1fr;
+      }
+
+      .actions {
+        grid-column: span 1;
+      }
+    }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useEffect, useMemo, useRef, useState } = React;
+
+const API = "/api/v1";
+const SAMPLE = String.raw`\begin{proof}
+Пусть $G$ — конечная группа порядка $n$ и $g \in G$ — произвольный элемент.
+Рассмотрим циклическую подгруппу $\langle g \rangle$, порождённую элементом $g$.
+По теореме Лагранжа, порядок подгруппы $|\langle g \rangle|$ делит $|G| = n$.
+Поскольку порядок элемента $\mathrm{ord}(g)=|\langle g \rangle|$, получаем, что $\mathrm{ord}(g) \mid n$.
+Следовательно, $g^n = e$.
+\end{proof}`;
+
+function normalizeLatexForRender(input) {
+  if (!input) return "";
+  return String(input)
+    .replace(/\\begin\{proof\}/g, "")
+    .replace(/\\end\{proof\}/g, "")
+    .trim();
+}
+
+function severityClass(severity) {
+  if (severity === "error") return "error";
+  if (severity === "warning") return "warning";
+  return "info";
+}
+
+function hasOwnStepId(remark) {
+  return Number.isInteger(remark?.step_id);
+}
+
+function MathText({ text, className = "", inline = false }) {
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+
+    const normalized = normalizeLatexForRender(text);
+    node.textContent = normalized;
+
+    if (window.MathJax?.typesetPromise) {
+      window.MathJax.typesetClear?.([node]);
+      window.MathJax.typesetPromise([node]).catch((err) => {
+        console.error("MathJax render error:", err);
+      });
+    }
+  }, [text]);
+
+  return (
+    <div
+      ref={ref}
+      className={`${className} math-box`}
+      style={inline ? { display: "inline-block" } : undefined}
+    />
+  );
+}
+
+function RemarkCard({ remark, theoremsCache }) {
+  const refs = remark.rag_references || [];
+  const cls = severityClass(remark.severity);
+
+  return (
+    <div className={`remark-card ${cls}`}>
+      <div className="remark-meta-row">
+        <span className={`pill ${cls}`}>{remark.severity || "info"}</span>
+        {remark.phase && <span className="pill info">{remark.phase}</span>}
+        {(remark.reported_by || remark.source) && (
+          <span className="pill info">{remark.reported_by || remark.source}</span>
+        )}
+      </div>
+
+      <div className="remark-message">
+        {remark.message || "Без текста замечания"}
+      </div>
+
+      {remark.suggestion && (
+        <div className="remark-extra">
+          <strong>Как исправить:</strong> {remark.suggestion}
+        </div>
+      )}
+
+      {Array.isArray(remark.affected_steps) && remark.affected_steps.length > 0 && (
+        <div className="remark-extra">
+          <strong>Затронутые шаги:</strong> {remark.affected_steps.join(", ")}
+        </div>
+      )}
+
+      {Array.isArray(remark.missing_conditions) && remark.missing_conditions.length > 0 && (
+        <div className="remark-extra">
+          <strong>Невыполненные условия:</strong> {remark.missing_conditions.join(", ")}
+        </div>
+      )}
+
+      {refs.length > 0 && (
+        <div className="theorem-box">
+          <strong>RAG references</strong>
+          {refs.map((name) => {
+            const item = theoremsCache[name];
+            return (
+              <div key={name} style={{ marginTop: 8 }}>
+                <div><strong>{name}</strong></div>
+                <div className="muted">{item?.statement || "Загрузка формулировки..."}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  const [latex, setLatex] = useState(SAMPLE);
+  const [proofId, setProofId] = useState(`proof_${Date.now()}`);
+  const [topic, setTopic] = useState("теория групп");
+  const [level, setLevel] = useState("undergraduate");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+  const [jobId, setJobId] = useState("");
+  const [jobStatus, setJobStatus] = useState("");
+  const [theoremsCache, setTheoremsCache] = useState({});
+
+  async function requestJson(url, options = {}) {
+    const resp = await fetch(url, {
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options,
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`);
+    return data;
+  }
+
+  const payload = useMemo(() => ({
+    proof_id: proofId,
+    latex,
+    context: { topic, level },
+  }), [proofId, latex, topic, level]);
+
+  async function runDirect() {
+    setLoading(true);
+    setError("");
+    setJobId("");
+    setJobStatus("");
+
+    try {
+      const data = await requestJson(`${API}/proofs/verify`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      setResult(data);
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runAsJob() {
+    setLoading(true);
+    setError("");
+    setResult(null);
+
+    try {
+      const data = await requestJson(`${API}/proofs/jobs`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      setJobId(data.job_id);
+      setJobStatus(data.status);
+    } catch (e) {
+      setError(e.message || String(e));
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!jobId) return;
+
+    let cancelled = false;
+    const timer = setInterval(async () => {
+      try {
+        const job = await requestJson(`${API}/proofs/jobs/${jobId}`);
+        if (cancelled) return;
+
+        setJobStatus(job.status);
+
+        if (job.status === "completed") {
+          setResult(job.result);
+          setLoading(false);
+          clearInterval(timer);
+        }
+
+        if (job.status === "failed") {
+          setError(job.error || "Job failed");
+          setLoading(false);
+          clearInterval(timer);
+        }
+      } catch (e) {
+        if (!cancelled) setError(e.message || String(e));
+      }
+    }, 1800);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [jobId]);
+
+  async function loadTheorems(names) {
+    const filtered = names.filter(Boolean).filter((name) => !theoremsCache[name]);
+    if (!filtered.length) return;
+
+    const data = await requestJson(`${API}/theorems?names=${encodeURIComponent(filtered.join("|"))}`);
+    const map = { ...theoremsCache };
+    data.forEach((item) => {
+      map[item.name] = item;
+    });
+    setTheoremsCache(map);
+  }
+
+  useEffect(() => {
+    if (!result?.remarks) return;
+    const refs = [...new Set(result.remarks.flatMap((r) => r.rag_references || []))];
+    if (refs.length) {
+      loadTheorems(refs).catch(console.error);
+    }
+  }, [result]);
+
+  useEffect(() => {
+    if (window.MathJax?.typesetPromise) {
+      window.MathJax.typesetPromise().catch(console.error);
+    }
+  }, [result, latex]);
+
+  const allRemarks = result?.remarks || [];
+
+  const globalRemarks = allRemarks.filter((remark) => {
+    return !hasOwnStepId(remark);
+  });
+
+  return (
+    <div className="app">
+      <div className="hero">
+        <div>
+          <h1>ProofsAnalyze</h1>
+          <p>Асинхронный сервис верификации математических доказательств: LaTeX → шаги → факты → логика.</p>
+        </div>
+        <div className="badge">FastAPI · async API · RAG · multi-agent</div>
+      </div>
+
+      <div className="grid">
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <div className="panel-title">Редактор доказательства</div>
+              <div className="panel-subtitle">Слева LaTeX, справа человекочитаемый предпросмотр</div>
+            </div>
+          </div>
+
+          <div className="editor-wrap">
+            <textarea value={latex} onChange={(e) => setLatex(e.target.value)} />
+            <div className="preview">
+              <MathText text={latex} />
+            </div>
+          </div>
+
+          <div className="controls">
+            <div className="field">
+              <label>ID доказательства</label>
+              <input value={proofId} onChange={(e) => setProofId(e.target.value)} />
+            </div>
+
+            <div className="field">
+              <label>Область</label>
+              <input value={topic} onChange={(e) => setTopic(e.target.value)} />
+            </div>
+
+            <div className="field">
+              <label>Уровень</label>
+              <select value={level} onChange={(e) => setLevel(e.target.value)}>
+                <option value="elementary">elementary</option>
+                <option value="undergraduate">undergraduate</option>
+                <option value="graduate">graduate</option>
+              </select>
+            </div>
+
+            <div className="field">
+              <label>Шаблон</label>
+              <button className="secondary" onClick={() => setLatex(SAMPLE)}>Подставить пример</button>
+            </div>
+
+            <div className="actions">
+              <button className="primary" onClick={runDirect} disabled={loading}>
+                Проверить сразу
+              </button>
+              <button className="secondary" onClick={runAsJob} disabled={loading}>
+                Отправить как job
+              </button>
+              {loading && (
+                <span className="muted">
+                  Идёт анализ. Для долгих доказательств лучше использовать job-режим.
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <div className="panel-title">Результат проверки</div>
+              <div className="panel-subtitle">Замечания агентов, шаги доказательства и ссылки на теоремы</div>
+            </div>
+          </div>
+
+          <div className="result-content">
+            {error && <div className="remark error">{error}</div>}
+
+            {!result && !error && (
+              <div className="empty">
+                Отправьте доказательство на проверку, чтобы увидеть результат.
+              </div>
+            )}
+
+            {result && (
+              <>
+                <div className="summary-card">
+                  <div className="summary-line">
+                    <strong>{result.summary}</strong>
+                    <span className={`pill ${result.is_valid ? "ok" : "error"}`}>
+                      {result.is_valid ? "valid" : "invalid"}
+                    </span>
+                    <span className="pill warn">confidence {result.confidence_score}</span>
+                  </div>
+
+                  {result.iteration_recommendation && (
+                    <p className="muted">{result.iteration_recommendation}</p>
+                  )}
+
+                  <div className="jobs-box">
+                    <div className="job-line">
+                      <span>fact rounds: {result.phases?.fact_checking?.rounds_taken ?? 0}</span>
+                      <span>logic rounds: {result.phases?.logic_checking?.rounds_taken ?? 0}</span>
+                      <span>remarks: {allRemarks.length}</span>
+                    </div>
+                    {jobId && (
+                      <div className="job-line">
+                        job: {jobId} · status: {jobStatus}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {globalRemarks.length > 0 && (
+                  <>
+                    <div className="section-title">Глобальные замечания</div>
+                    <div className="remarks-list">
+                      {globalRemarks.map((remark, idx) => (
+                        <RemarkCard key={`global-${idx}`} remark={remark} theoremsCache={theoremsCache} />
+                      ))}
+                    </div>
+                    <div className="divider"></div>
+                  </>
+                )}
+
+                <div className="section-title">Шаги доказательства</div>
+                <div className="steps">
+                  {(result.parsed_steps || []).map((step, index) => {
+                    const directRemarks = allRemarks.filter((item) => item.step_id === index);
+                    const affectedRemarks = allRemarks.filter((item) => {
+                      if (item.step_id === index) return false;
+                      return Array.isArray(item.affected_steps) && item.affected_steps.includes(index);
+                    });
+
+                    const stepRemarks = [...directRemarks, ...affectedRemarks];
+
+                    return (
+                      <div className="step" key={index}>
+                        <div className="step-head">
+                          <div>
+                            <div className="step-title">
+                              Шаг {index}: {step.content || "—"}
+                            </div>
+                            <div className="step-meta">
+                              тип: {step.step_type} · обоснование: {step.justification || "не указано"}
+                            </div>
+                          </div>
+                        </div>
+
+                        {step.content_latex && (
+                          <div style={{ marginTop: 10 }}>
+                            <MathText text={step.content_latex} className="muted" />
+                          </div>
+                        )}
+
+                        {stepRemarks.length === 0 && (
+                          <div className="empty">Замечаний по шагу нет.</div>
+                        )}
+
+                        {stepRemarks.map((remark, idx) => (
+                          <RemarkCard
+                            key={`step-${index}-${idx}`}
+                            remark={remark}
+                            theoremsCache={theoremsCache}
+                          />
+                        ))}
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
