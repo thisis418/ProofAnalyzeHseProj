@@ -17,13 +17,31 @@ class VerifyProofRequestSchema(BaseModel):
     max_rounds: int | None = Field(default=None, ge=1, le=10)
 
 
+class UsedTheoremSchema(BaseModel):
+    fact_name: str | None = None
+    theorem_name: str
+    matched_theorem: str | None = None
+    references: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
+
+
+class ProofStepSchema(BaseModel):
+    content: str = ""
+    content_latex: str = ""
+    justification: str = ""
+    step_type: str = "assertion"
+    source_indices: list[int] = Field(default_factory=list)
+    line_number: int | None = None
+    used_theorems: list[UsedTheoremSchema] = Field(default_factory=list)
+
+
 class VerifyProofResponseSchema(BaseModel):
     proof_id: str
     is_valid: bool
     confidence_score: float
     summary: str
     iteration_recommendation: str | None = None
-    parsed_steps: list[dict[str, Any]]
+    parsed_steps: list[ProofStepSchema]
     phases: dict[str, Any]
     remarks: list[dict[str, Any]]
     debate_history: list[dict[str, Any]]

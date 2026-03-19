@@ -64,6 +64,178 @@ class VerificationPipeline:
                 remarks.append({**gr, "reported_by": "critic", "phase": phase})
         return remarks
 
+    @staticmethod
+    def _latest_phase_entry(
+        debate_history: list[dict], agent: str, phase: str
+    ) -> dict[str, Any]:
+        for entry in reversed(debate_history):
+            if entry.get("agent") == agent and entry.get("phase") == phase:
+                return entry
+        return {}
+
+    @staticmethod
+    def _unique_strings(values: list[Any]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for value in values:
+            if value is None:
+                continue
+            normalized = str(value).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(normalized)
+        return result
+
+    def _attach_used_theorems(
+        self,
+        proof_steps: list[dict[str, Any]],
+        debate_history: list[dict],
+        remarks: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        enriched_steps = [dict(step) for step in proof_steps]
+        per_step: dict[int, list[dict[str, Any]]] = {
+            index: [] for index, _ in enumerate(enriched_steps)
+        }
+        formulator_facts = self._latest_phase_entry(
+            debate_history, agent="formulator", phase="fact_checking"
+        )
+        critic_facts = self._latest_phase_entry(
+            debate_history, agent="critic", phase="fact_checking"
+        )
+
+        for raw_step_id, step_data in formulator_facts.get("step_results", {}).items():
+            try:
+                step_id = int(raw_step_id)
+            except (TypeError, ValueError):
+                continue
+            if step_id not in per_step:
+                continue
+            for fact in step_data.get("facts_found", []):
+                references = self._unique_strings(
+                    [fact.get("matched_theorem"), *(fact.get("rag_references", []))]
+                )
+                if not references and not fact.get("name"):
+                    continue
+                per_step[step_id].append(
+                    {
+                        "fact_name": fact.get("name"),
+                        "theorem_name": fact.get("matched_theorem")
+                        or (references[0] if references else fact.get("name")),
+                        "matched_theorem": fact.get("matched_theorem"),
+                        "references": references,
+                        "sources": ["formulator"],
+                    }
+                )
+            for remark in step_data.get("remarks", []):
+                references = self._unique_strings(
+                    [remark.get("fact_name"), *(remark.get("rag_references", []))]
+                )
+                if not references and not remark.get("fact_name"):
+                    continue
+                per_step[step_id].append(
+                    {
+                        "fact_name": remark.get("fact_name"),
+                        "theorem_name": remark.get("fact_name")
+                        or (references[0] if references else ""),
+                        "matched_theorem": None,
+                        "references": references,
+                        "sources": ["formulator_remark"],
+                    }
+                )
+
+        for raw_step_id, step_data in critic_facts.get("step_reviews", {}).items():
+            try:
+                step_id = int(raw_step_id)
+            except (TypeError, ValueError):
+                continue
+            if step_id not in per_step:
+                continue
+            references = self._unique_strings(step_data.get("rag_references_found", []))
+            if not references:
+                continue
+            per_step[step_id].append(
+                {
+                    "fact_name": None,
+                    "theorem_name": references[0],
+                    "matched_theorem": None,
+                    "references": references,
+                    "sources": ["critic"],
+                }
+            )
+
+        for remark in remarks:
+            step_id = remark.get("step_id")
+            if not isinstance(step_id, int) or step_id not in per_step:
+                continue
+            references = self._unique_strings(
+                [remark.get("fact_name"), *(remark.get("rag_references", []))]
+            )
+            if not references and not remark.get("fact_name"):
+                continue
+            per_step[step_id].append(
+                {
+                    "fact_name": remark.get("fact_name"),
+                    "theorem_name": remark.get("fact_name")
+                    or (references[0] if references else ""),
+                    "matched_theorem": None,
+                    "references": references,
+                    "sources": ["final_remark"],
+                }
+            )
+
+        for step_id, step in enumerate(enriched_steps):
+            grouped: dict[str, dict[str, Any]] = {}
+            for item in per_step[step_id]:
+                references = self._unique_strings(item.get("references", []))
+                key = "|".join(references) or str(item.get("fact_name") or "")
+                if not key:
+                    continue
+                existing = grouped.get(key)
+                if existing:
+                    existing["references"] = self._unique_strings(
+                        [*existing.get("references", []), *references]
+                    )
+                    existing["sources"] = self._unique_strings(
+                        [*existing.get("sources", []), *item.get("sources", [])]
+                    )
+                    existing["fact_name"] = (
+                        existing.get("fact_name") or item.get("fact_name")
+                    )
+                    existing["matched_theorem"] = (
+                        existing.get("matched_theorem") or item.get("matched_theorem")
+                    )
+                    existing["theorem_name"] = (
+                        existing.get("theorem_name") or item.get("theorem_name")
+                    )
+                    continue
+                grouped[key] = {
+                    "fact_name": item.get("fact_name"),
+                    "theorem_name": item.get("theorem_name"),
+                    "matched_theorem": item.get("matched_theorem"),
+                    "references": references,
+                    "sources": self._unique_strings(item.get("sources", [])),
+                }
+            step["used_theorems"] = [
+                {
+                    **item,
+                    "theorem_name": item.get("theorem_name")
+                    or next(
+                        (
+                            candidate
+                            for candidate in [
+                                *(item.get("references") or []),
+                                item.get("fact_name"),
+                            ]
+                            if candidate
+                        ),
+                        "",
+                    ),
+                }
+                for item in grouped.values()
+            ]
+        return enriched_steps
+
     async def _run_phase(
         self,
         phase_name: str,
@@ -177,6 +349,9 @@ class VerificationPipeline:
         fact_remarks = self._collect_final_remarks(debate_history, "fact_checking")
         logic_remarks = self._collect_final_remarks(debate_history, "logic_checking")
         all_remarks = fact_remarks + logic_remarks
+        normalized_steps = self._attach_used_theorems(
+            proof_steps, debate_history, all_remarks
+        )
         error_count = sum(1 for r in all_remarks if r.get("severity") == "error")
         warning_count = sum(1 for r in all_remarks if r.get("severity") == "warning")
         is_valid = error_count == 0
@@ -242,7 +417,7 @@ class VerificationPipeline:
             "confidence_score": confidence,
             "summary": summary,
             "iteration_recommendation": iteration_recommendation,
-            "parsed_steps": proof_steps,
+            "parsed_steps": normalized_steps,
             "phases": {
                 "fact_checking": {
                     "consensus_reached": fact_phase["consensus_reached"],

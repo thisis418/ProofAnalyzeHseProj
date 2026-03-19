@@ -273,6 +273,22 @@
       background: #0d1427;
     }
 
+    .step.clickable {
+      cursor: pointer;
+      transition: border-color 0.18s ease, transform 0.18s ease, background 0.18s ease;
+    }
+
+    .step.clickable:hover {
+      border-color: rgba(124, 156, 255, 0.55);
+      transform: translateY(-1px);
+      background: #111a31;
+    }
+
+    .step.active {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(124, 156, 255, 0.22);
+    }
+
     .step-head {
       display: flex;
       justify-content: space-between;
@@ -290,6 +306,67 @@
       color: var(--muted);
       font-size: 12px;
       margin-top: 4px;
+    }
+
+    .step-toggle {
+      color: var(--accent-2);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .step-theorem-summary {
+      margin-top: 10px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .theorem-chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      border: 1px solid rgba(79, 224, 194, 0.28);
+      background: rgba(79, 224, 194, 0.09);
+      color: #b9fff1;
+    }
+
+    .step-theorems-panel {
+      margin-top: 12px;
+      padding: 14px;
+      border-radius: 16px;
+      border: 1px solid rgba(124, 156, 255, 0.22);
+      background: rgba(124, 156, 255, 0.06);
+    }
+
+    .theorem-card {
+      padding: 12px 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.07);
+    }
+
+    .theorem-card:first-child {
+      padding-top: 0;
+      border-top: 0;
+    }
+
+    .theorem-card-title {
+      font-weight: 800;
+      line-height: 1.4;
+    }
+
+    .theorem-card-meta {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .theorem-card-text {
+      margin-top: 8px;
+      line-height: 1.55;
+      color: var(--text);
+      white-space: pre-wrap;
     }
 
     .remark {
@@ -371,6 +448,33 @@
       font-size: 13px;
     }
 
+    .job-search-box {
+      margin-bottom: 16px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02));
+    }
+
+    .job-search-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    .job-search-row input {
+      flex: 1 1 320px;
+      min-width: 240px;
+      background: #0d1427;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px 13px;
+      outline: none;
+    }
+
     .theorem-box {
       margin-top: 12px;
       padding: 10px 12px;
@@ -426,6 +530,15 @@
       .actions {
         grid-column: span 1;
       }
+
+      .job-search-row {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .job-search-row input {
+        min-width: 0;
+      }
     }
   </style>
 </head>
@@ -460,6 +573,133 @@ function severityClass(severity) {
 
 function hasOwnStepId(remark) {
   return Number.isInteger(remark?.step_id);
+}
+
+function uniqueStrings(values) {
+  return [...new Set((values || []).filter(Boolean).map((item) => String(item).trim()).filter(Boolean))];
+}
+
+function getLatestEntry(history, agent, phase) {
+  if (!Array.isArray(history)) return null;
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const entry = history[i];
+    if (entry?.agent === agent && entry?.phase === phase) {
+      return entry;
+    }
+  }
+  return null;
+}
+
+function extractStepTheoremMap(result) {
+  const parsedSteps = result?.parsed_steps || [];
+  const history = result?.debate_history || [];
+  const remarks = result?.remarks || [];
+  const map = Object.fromEntries(parsedSteps.map((_, index) => [index, []]));
+
+  parsedSteps.forEach((step, index) => {
+    (step?.used_theorems || []).forEach((item) => {
+      map[index].push({
+        factName: item?.fact_name || "",
+        theoremName: item?.theorem_name || item?.matched_theorem || "",
+        references: uniqueStrings(item?.references || []),
+        source: uniqueStrings(item?.sources || []).join(",") || "parsed_step",
+      });
+    });
+  });
+
+  const formulatorFacts = getLatestEntry(history, "formulator", "fact_checking");
+  const criticFacts = getLatestEntry(history, "critic", "fact_checking");
+
+  Object.entries(formulatorFacts?.step_results || {}).forEach(([rawIndex, stepData]) => {
+    const index = Number(rawIndex);
+    if (!Number.isInteger(index) || !map[index]) return;
+
+    (stepData?.facts_found || []).forEach((fact) => {
+      map[index].push({
+        factName: fact?.name || "",
+        theoremName: fact?.matched_theorem || "",
+        references: uniqueStrings([
+          fact?.matched_theorem,
+          ...(fact?.rag_references || []),
+        ]),
+        source: "formulator",
+      });
+    });
+
+    (stepData?.remarks || []).forEach((remark) => {
+      map[index].push({
+        factName: remark?.fact_name || "",
+        theoremName: remark?.fact_name || "",
+        references: uniqueStrings([
+          remark?.fact_name,
+          ...(remark?.rag_references || []),
+        ]),
+        source: "formulator_remark",
+      });
+    });
+  });
+
+  Object.entries(criticFacts?.step_reviews || {}).forEach(([rawIndex, stepData]) => {
+    const index = Number(rawIndex);
+    if (!Number.isInteger(index) || !map[index]) return;
+    map[index].push({
+      factName: "",
+      theoremName: "",
+      references: uniqueStrings(stepData?.rag_references_found || []),
+      source: "critic",
+    });
+  });
+
+  remarks.forEach((remark) => {
+    const index = remark?.step_id;
+    if (!Number.isInteger(index) || !map[index]) return;
+    map[index].push({
+      factName: remark?.fact_name || "",
+      theoremName: remark?.fact_name || "",
+      references: uniqueStrings([
+        remark?.fact_name,
+        ...(remark?.rag_references || []),
+      ]),
+      source: "final_remark",
+    });
+  });
+
+  return Object.fromEntries(
+    Object.entries(map).map(([rawIndex, items]) => {
+      const grouped = new Map();
+
+      items.forEach((item) => {
+        const refs = uniqueStrings(item.references);
+        const key = refs.join("|") || item.factName || item.theoremName || item.source;
+        if (!key) return;
+
+        const existing = grouped.get(key);
+        if (existing) {
+          existing.factNames = uniqueStrings([...existing.factNames, item.factName]);
+          existing.references = uniqueStrings([...existing.references, ...refs]);
+          existing.sources = uniqueStrings([...existing.sources, item.source]);
+          if (!existing.theoremName && item.theoremName) {
+            existing.theoremName = item.theoremName;
+          }
+          return;
+        }
+
+        grouped.set(key, {
+          theoremName: item.theoremName || refs[0] || "",
+          factNames: uniqueStrings([item.factName]),
+          references: refs,
+          sources: uniqueStrings([item.source]),
+        });
+      });
+
+      const normalizedItems = [...grouped.values()].map((item) => ({
+        ...item,
+        theoremName: item.theoremName || item.references[0] || item.factNames[0] || "",
+      }));
+
+      return [rawIndex, normalizedItems];
+    })
+  );
 }
 
 function MathText({ text, className = "", inline = false }) {
@@ -543,6 +783,56 @@ function RemarkCard({ remark, theoremsCache }) {
   );
 }
 
+function StepTheoremsPanel({ items, theoremsCache }) {
+  if (!items.length) {
+    return (
+      <div className="step-theorems-panel">
+        <div className="muted">
+          Для этого шага в финальном ответе не нашлось явных ссылок на теоремы. Это означает, что модель либо не использовала RAG на шаге, либо не вернула ссылку в структурированном виде.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="step-theorems-panel">
+      <div style={{ fontWeight: 800, marginBottom: 10 }}>Теоремы и факты, на которые опирался шаг</div>
+      {items.map((item, index) => {
+        const theorem = item.references.map((name) => theoremsCache[name]).find(Boolean);
+        const displayName = theorem?.name || item.theoremName || item.references[0] || item.factNames[0] || "Неизвестная теорема";
+
+        return (
+          <div className="theorem-card" key={`${displayName}-${index}`}>
+            <div className="theorem-card-title">{displayName}</div>
+
+            {item.factNames.length > 0 && (
+              <div className="theorem-card-meta">
+                Модель выделила факт: {item.factNames.join(", ")}
+              </div>
+            )}
+
+            {(theorem?.type || theorem?.category) && (
+              <div className="theorem-card-meta">
+                {[theorem?.type, theorem?.category].filter(Boolean).join(" · ")}
+              </div>
+            )}
+
+            <div className="theorem-card-text">
+              {theorem?.statement || "Формулировка пока недоступна в кеше. Если имя факта не совпало с названием записи в базе знаний, ручка /theorems не сможет вернуть текст теоремы."}
+            </div>
+
+            {theorem?.latex && (
+              <div style={{ marginTop: 8 }}>
+                <MathText text={theorem.latex} className="muted" />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function App() {
   const [latex, setLatex] = useState(SAMPLE);
   const [proofId, setProofId] = useState(`proof_${Date.now()}`);
@@ -553,7 +843,10 @@ function App() {
   const [error, setError] = useState("");
   const [jobId, setJobId] = useState("");
   const [jobStatus, setJobStatus] = useState("");
+  const [jobLookupId, setJobLookupId] = useState("");
+  const [jobLookupLoading, setJobLookupLoading] = useState(false);
   const [theoremsCache, setTheoremsCache] = useState({});
+  const [activeStepIndex, setActiveStepIndex] = useState(null);
 
   async function requestJson(url, options = {}) {
     const resp = await fetch(url, {
@@ -601,10 +894,46 @@ function App() {
         body: JSON.stringify(payload),
       });
       setJobId(data.job_id);
+      setJobLookupId(data.job_id);
       setJobStatus(data.status);
     } catch (e) {
       setError(e.message || String(e));
       setLoading(false);
+    }
+  }
+
+  async function fetchJobById(rawId) {
+    const id = String(rawId || "").trim();
+    if (!id) {
+      setError("Введите job id");
+      return;
+    }
+
+    setJobLookupLoading(true);
+    setError("");
+
+    try {
+      const job = await requestJson(`${API}/proofs/jobs/${id}`);
+
+      setJobId(id);
+      setJobLookupId(id);
+      setJobStatus(job.status);
+
+      if (job.status === "completed") {
+        setResult(job.result);
+        setLoading(false);
+      } else if (job.status === "failed") {
+        setResult(null);
+        setLoading(false);
+        setError(job.error || "Job failed");
+      } else {
+        setResult(null);
+        setLoading(true);
+      }
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      setJobLookupLoading(false);
     }
   }
 
@@ -646,19 +975,29 @@ function App() {
     if (!filtered.length) return;
 
     const data = await requestJson(`${API}/theorems?names=${encodeURIComponent(filtered.join("|"))}`);
-    const map = { ...theoremsCache };
-    data.forEach((item) => {
-      map[item.name] = item;
+    setTheoremsCache((prev) => {
+      const map = { ...prev };
+      data.forEach((item) => {
+        map[item.name] = item;
+      });
+      return map;
     });
-    setTheoremsCache(map);
   }
 
   useEffect(() => {
-    if (!result?.remarks) return;
-    const refs = [...new Set(result.remarks.flatMap((r) => r.rag_references || []))];
+    if (!result) return;
+    const stepTheoremMap = extractStepTheoremMap(result);
+    const refs = uniqueStrings([
+      ...(result.remarks || []).flatMap((r) => r.rag_references || []),
+      ...Object.values(stepTheoremMap).flatMap((items) => items.flatMap((item) => item.references || [])),
+    ]);
     if (refs.length) {
       loadTheorems(refs).catch(console.error);
     }
+  }, [result]);
+
+  useEffect(() => {
+    setActiveStepIndex(null);
   }, [result]);
 
   useEffect(() => {
@@ -668,6 +1007,7 @@ function App() {
   }, [result, latex]);
 
   const allRemarks = result?.remarks || [];
+  const stepTheoremMap = useMemo(() => extractStepTheoremMap(result), [result]);
 
   const globalRemarks = allRemarks.filter((remark) => {
     return !hasOwnStepId(remark);
@@ -725,10 +1065,10 @@ function App() {
             </div>
 
             <div className="actions">
-              <button className="primary" onClick={runDirect} disabled={loading}>
+              <button className="primary" onClick={runDirect} disabled={loading || jobLookupLoading}>
                 Проверить сразу
               </button>
-              <button className="secondary" onClick={runAsJob} disabled={loading}>
+              <button className="secondary" onClick={runAsJob} disabled={loading || jobLookupLoading}>
                 Отправить как job
               </button>
               {loading && (
@@ -749,11 +1089,42 @@ function App() {
           </div>
 
           <div className="result-content">
+            <div className="job-search-box">
+              <div className="panel-title">Найти job по ID</div>
+              <div className="panel-subtitle">Можно открыть уже созданную задачу и посмотреть её текущий статус или конечный результат.</div>
+              <div className="job-search-row">
+                <input
+                  value={jobLookupId}
+                  onChange={(e) => setJobLookupId(e.target.value)}
+                  placeholder="Например: 48db5dde-13e3-44af-aeef-d6a22048792d"
+                />
+                <button
+                  className="secondary"
+                  onClick={() => fetchJobById(jobLookupId)}
+                  disabled={jobLookupLoading}
+                >
+                  {jobLookupLoading ? "Поиск..." : "Найти job"}
+                </button>
+              </div>
+            </div>
+
             {error && <div className="remark error">{error}</div>}
 
-            {!result && !error && (
+            {!result && !error && !jobId && (
               <div className="empty">
                 Отправьте доказательство на проверку, чтобы увидеть результат.
+              </div>
+            )}
+
+            {!result && !error && jobId && jobStatus && jobStatus !== "completed" && (
+              <div className="summary-card">
+                <div className="summary-line">
+                  <strong>Job найдена</strong>
+                  <span className="pill info">status: {jobStatus}</span>
+                </div>
+                <p className="muted">
+                  Если задача ещё в процессе, результат появится автоматически.
+                </p>
               </div>
             )}
 
@@ -799,6 +1170,9 @@ function App() {
                 )}
 
                 <div className="section-title">Шаги доказательства</div>
+                <div className="muted" style={{ marginBottom: 10 }}>
+                  Кликните по шагу, чтобы посмотреть, на какую теорему или факт ссылалась модель.
+                </div>
                 <div className="steps">
                   {(result.parsed_steps || []).map((step, index) => {
                     const directRemarks = allRemarks.filter((item) => item.step_id === index);
@@ -808,9 +1182,24 @@ function App() {
                     });
 
                     const stepRemarks = [...directRemarks, ...affectedRemarks];
+                    const stepTheorems = stepTheoremMap[index] || [];
+                    const isActive = activeStepIndex === index;
 
                     return (
-                      <div className="step" key={index}>
+                      <div
+                        className={`step clickable ${isActive ? "active" : ""}`}
+                        key={index}
+                        onClick={() => setActiveStepIndex(isActive ? null : index)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setActiveStepIndex(isActive ? null : index);
+                          }
+                        }}
+                        role="button"
+                        tabIndex={0}
+                        aria-expanded={isActive}
+                      >
                         <div className="step-head">
                           <div>
                             <div className="step-title">
@@ -820,12 +1209,31 @@ function App() {
                               тип: {step.step_type} · обоснование: {step.justification || "не указано"}
                             </div>
                           </div>
+                          <div className="step-toggle">
+                            {isActive ? "Скрыть теоремы" : "Показать теоремы"}
+                          </div>
+                        </div>
+
+                        <div className="step-theorem-summary">
+                          {stepTheorems.length > 0 ? (
+                            stepTheorems.slice(0, 3).map((item, chipIndex) => (
+                              <span className="theorem-chip" key={`${item.theoremName}-${chipIndex}`}>
+                                {item.theoremName || item.references[0] || item.factNames[0] || "Теорема"}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="theorem-chip">Явная теорема не выделена</span>
+                          )}
                         </div>
 
                         {step.content_latex && (
                           <div style={{ marginTop: 10 }}>
                             <MathText text={step.content_latex} className="muted" />
                           </div>
+                        )}
+
+                        {isActive && (
+                          <StepTheoremsPanel items={stepTheorems} theoremsCache={theoremsCache} />
                         )}
 
                         {stepRemarks.length === 0 && (
