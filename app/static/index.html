@@ -818,7 +818,7 @@ function StepTheoremsPanel({ items, theoremsCache }) {
             )}
 
             <div className="theorem-card-text">
-              {theorem?.statement || "Формулировка пока недоступна в кеше. Если имя факта не совпало с названием записи в базе знаний, ручка /theorems не сможет вернуть текст теоремы."}
+              {theorem?.statement || "Данной формулировки нет в базе знаний, скорее всего, это не теорема, а общеизвестный факт."}
             </div>
 
             {theorem?.latex && (
