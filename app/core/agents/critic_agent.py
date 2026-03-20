@@ -47,6 +47,35 @@ class CriticAgent:
             )
         return "\n".join(lines)
 
+    @staticmethod
+    def _merge_retrieval_results(
+        batches: list[list[dict[str, Any]]], top_k: int
+    ) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        for batch in batches:
+            for item in batch:
+                key = f"{item.get('type','')}|{item.get('name','')}"
+                prev = merged.get(key)
+                if prev is None or float(item.get("score", 0.0)) > float(
+                    prev.get("score", 0.0)
+                ):
+                    merged[key] = item
+        ordered = sorted(
+            merged.values(), key=lambda x: float(x.get("score", 0.0)), reverse=True
+        )
+        return ordered[:top_k]
+
+    async def _search_rag_multilingual(
+        self, query: str, top_k: int, context: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        queries = await self.proof_utils.build_rag_queries(query, context)
+        if not queries:
+            return []
+        batches: list[list[dict[str, Any]]] = []
+        for q in queries:
+            batches.append(await asyncio.to_thread(self.vector_store.search, q, top_k))
+        return self._merge_retrieval_results(batches, top_k=top_k)
+
     async def _critic_verify_fact_independently(
         self,
         fact_name: str,
@@ -54,7 +83,9 @@ class CriticAgent:
         formulator_remark: dict[str, Any] | None,
         context: dict[str, Any],
     ) -> dict[str, Any]:
-        theorems = await asyncio.to_thread(self.vector_store.search, fact_name, 3)
+        theorems = await self._search_rag_multilingual(
+            fact_name, top_k=3, context=context
+        )
         theorems_text = (
             "\n\n".join(
                 f"[{i + 1}] {t['name']} ({t.get('type', '?')}):\n{t['statement']}"

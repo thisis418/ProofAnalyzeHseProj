@@ -24,6 +24,16 @@ class VerificationPipeline:
         self.max_rounds_per_phase = (
             max_rounds_per_phase or self.DEFAULT_MAX_ROUNDS_PER_PHASE
         )
+        self._last_progress_percent: dict[str, float] = {}
+
+    def _log_progress(self, proof_id: str, percent: float, stage: str) -> None:
+        percent = max(0.0, min(100.0, percent))
+        prev = self._last_progress_percent.get(proof_id, -1.0)
+        # Не спамим одинаковыми значениями прогресса
+        if round(percent, 1) <= round(prev, 1):
+            return
+        self._last_progress_percent[proof_id] = percent
+        logger.info("📈 Progress [%s]: %.1f%% — %s", proof_id, percent, stage)
 
     @staticmethod
     def _collect_final_remarks(debate_history: list[dict], phase: str) -> list[dict]:
@@ -238,6 +248,7 @@ class VerificationPipeline:
 
     async def _run_phase(
         self,
+        proof_id: str,
         phase_name: str,
         proof_steps: list[dict[str, Any]],
         debate_history: list[dict],
@@ -245,26 +256,50 @@ class VerificationPipeline:
         formulator_fn: Callable,
         critic_fn: Callable,
         max_rounds: int,
+        phase_start_pct: float,
+        phase_weight_pct: float,
     ) -> dict[str, Any]:
         logger.info("\n%s\n▶ Фаза: %s\n%s", "=" * 60, phase_name.upper(), "=" * 60)
         last_formulator_result: dict[str, Any] | None = None
         last_critic_result: dict[str, Any] | None = None
+        round_weight = phase_weight_pct / max(1, max_rounds)
         for round_num in range(1, max_rounds + 1):
             logger.info("\n  📍 %s | Раунд %s/%s", phase_name, round_num, max_rounds)
+            before_round = phase_start_pct + (round_num - 1) * round_weight
+            self._log_progress(
+                proof_id,
+                before_round,
+                f"{phase_name}: round {round_num}/{max_rounds} (formulator)",
+            )
             formulator_result = await formulator_fn(
                 proof_steps, debate_history, context
             )
             formulator_result["round"] = round_num
             debate_history.append(formulator_result)
             last_formulator_result = formulator_result
+            self._log_progress(
+                proof_id,
+                before_round + round_weight * 0.5,
+                f"{phase_name}: round {round_num}/{max_rounds} (critic)",
+            )
             critic_result = await critic_fn(
                 proof_steps, formulator_result, debate_history, context
             )
             critic_result["round"] = round_num
             debate_history.append(critic_result)
             last_critic_result = critic_result
+            after_round = phase_start_pct + round_num * round_weight
+            self._log_progress(
+                proof_id, after_round, f"{phase_name}: round {round_num} completed"
+            )
             if critic_result.get("consensus_reached", False):
                 logger.info("  ✅ Консенсус на раунде %s", round_num)
+                # Если сошлись раньше лимита, считаем фазу полностью завершённой.
+                self._log_progress(
+                    proof_id,
+                    phase_start_pct + phase_weight_pct,
+                    f"{phase_name}: consensus reached",
+                )
                 break
             if round_num < max_rounds:
                 logger.info("  ↩ Следующий раунд...")
@@ -308,9 +343,12 @@ class VerificationPipeline:
         )
         logger.info("%s", "#" * 60)
         logger.info("▶ Парсинг LaTeX доказательства...")
+        self._log_progress(proof_id, 2.0, "request accepted")
         proof_steps = await self.proof_utils.parse_latex_proof(latex, context)
+        self._log_progress(proof_id, 10.0, "latex parsing completed")
         logger.info("  Выделено шагов: %s", len(proof_steps))
         if not proof_steps:
+            self._log_progress(proof_id, 100.0, "finished with parsing error")
             return {
                 "proof_id": proof_id,
                 "is_valid": False,
@@ -329,6 +367,7 @@ class VerificationPipeline:
                 "debate_history": [],
             }
         fact_phase = await self._run_phase(
+            proof_id=proof_id,
             phase_name="fact_checking",
             proof_steps=proof_steps,
             debate_history=debate_history,
@@ -336,8 +375,11 @@ class VerificationPipeline:
             formulator_fn=self.formulator.formulator_check_facts,
             critic_fn=self.critic.critic_review_facts,
             max_rounds=max_rounds,
+            phase_start_pct=10.0,
+            phase_weight_pct=45.0,
         )
         logic_phase = await self._run_phase(
+            proof_id=proof_id,
             phase_name="logic_checking",
             proof_steps=proof_steps,
             debate_history=debate_history,
@@ -345,6 +387,8 @@ class VerificationPipeline:
             formulator_fn=self.formulator.formulator_check_logic,
             critic_fn=self.critic.critic_review_logic,
             max_rounds=max_rounds,
+            phase_start_pct=55.0,
+            phase_weight_pct=45.0,
         )
         fact_remarks = self._collect_final_remarks(debate_history, "fact_checking")
         logic_remarks = self._collect_final_remarks(debate_history, "logic_checking")
@@ -411,6 +455,8 @@ class VerificationPipeline:
             warning_count,
         )
         logger.info("%s\n", "#" * 60)
+        self._log_progress(proof_id, 100.0, "verification finished")
+        self._last_progress_percent.pop(proof_id, None)
         return {
             "proof_id": proof_id,
             "is_valid": is_valid,

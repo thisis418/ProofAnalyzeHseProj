@@ -90,6 +90,20 @@ class ProofUtils:
             for index, sentence in enumerate(sentences)
         ]
 
+    @staticmethod
+    def _parse_source_indices(raw_step: dict[str, Any], fallback_index: int) -> list[int]:
+        raw = raw_step.get("source_indices")
+        if isinstance(raw, list):
+            parsed = [int(x) for x in raw if isinstance(x, int) or str(x).isdigit()]
+            return parsed if parsed else [fallback_index]
+        if isinstance(raw, int):
+            return [raw]
+        if isinstance(raw, str):
+            # Support model outputs like "0, 1" or "0 1"
+            parsed = [int(x) for x in re.findall(r"\d+", raw)]
+            return parsed if parsed else [fallback_index]
+        return [fallback_index]
+
     async def sentences_to_steps(
         self, sentences: list[str], full_latex: str, context: dict[str, Any]
     ) -> list[dict[str, Any]]:
@@ -123,11 +137,10 @@ class ProofUtils:
 {{
   "steps": [
     {{
-      "content": "plain-text описание шага",
+      "content": "Краткое текстовое описание шага",
       "content_latex": "LaTeX-фрагмент",
       "justification": "теорема/лемма/аксиома или пусто",
-      "step_type": "definition|assumption|assertion|implication|conclusion",
-      "source_indices": [0, 1]
+      "step_type": "definition|assumption|assertion|implication|conclusion"
     }}
   ]
 }}
@@ -148,10 +161,10 @@ class ProofUtils:
         steps: list[dict[str, Any]] = []
         for index, raw_step in enumerate(raw_steps):
             source_indices = (
-                raw_step.get("source_indices", []) if isinstance(raw_step, dict) else []
+                self._parse_source_indices(raw_step, index)
+                if isinstance(raw_step, dict)
+                else [index]
             )
-            if not isinstance(source_indices, list):
-                source_indices = []
             steps.append(
                 {
                     "content": raw_step.get("content", "")
@@ -180,6 +193,47 @@ class ProofUtils:
         steps = await self.sentences_to_steps(sentences, latex, context)
         logger.info("parse_latex_proof: %s steps", len(steps))
         return steps
+
+    async def build_rag_queries(
+        self, query: str, context: dict[str, Any]
+    ) -> list[str]:
+        """
+        Build multilingual retrieval queries (RU + EN) using the configured LLM.
+        """
+        base = (query or "").strip()
+        if not base:
+            return []
+        prompt = f"""
+Область: {context.get("topic", "математика")}.
+
+Переведи поисковый запрос по математике на английский язык для semantic search.
+Если запрос уже на английском, верни его как есть.
+
+Запрос:
+{base}
+
+Верни ТОЛЬКО JSON:
+{{
+  "english_query": "..."
+}}
+"""
+        result = await self.llm_client.call(
+            prompt,
+            system_instruction=(
+                "Ты — переводчик математических терминов для RAG-поиска. "
+                "Отвечай только валидным JSON."
+            ),
+        )
+        english = ""
+        if isinstance(result, dict):
+            english = str(result.get("english_query", "")).strip()
+        queries: list[str] = []
+        for item in (base, english):
+            if not item:
+                continue
+            if not any(item.casefold() == existing.casefold() for existing in queries):
+                queries.append(item)
+        return queries
 
     @classmethod
     def get_window(

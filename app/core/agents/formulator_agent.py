@@ -49,6 +49,35 @@ class FormulatorAgent:
             )
         return "\n".join(lines)
 
+    @staticmethod
+    def _merge_retrieval_results(
+        batches: list[list[dict[str, Any]]], top_k: int
+    ) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        for batch in batches:
+            for item in batch:
+                key = f"{item.get('type','')}|{item.get('name','')}"
+                prev = merged.get(key)
+                if prev is None or float(item.get("score", 0.0)) > float(
+                    prev.get("score", 0.0)
+                ):
+                    merged[key] = item
+        ordered = sorted(
+            merged.values(), key=lambda x: float(x.get("score", 0.0)), reverse=True
+        )
+        return ordered[:top_k]
+
+    async def _search_rag_multilingual(
+        self, query: str, top_k: int, context: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        queries = await self.proof_utils.build_rag_queries(query, context)
+        if not queries:
+            return []
+        batches: list[list[dict[str, Any]]] = []
+        for q in queries:
+            batches.append(await asyncio.to_thread(self.vector_store.search, q, top_k))
+        return self._merge_retrieval_results(batches, top_k=top_k)
+
     async def _extract_facts_from_step(
         self, step: dict[str, Any], context: dict[str, Any]
     ) -> list[dict[str, Any]]:
@@ -93,15 +122,17 @@ class FormulatorAgent:
         self, fact: dict[str, str], step: dict[str, Any], context: dict[str, Any]
     ) -> dict[str, Any]:
         query = fact.get("query") or fact.get("name", "")
-        theorems = await asyncio.to_thread(self.vector_store.search, query, 3)
+        theorems = await self._search_rag_multilingual(query, top_k=3, context=context)
         if not theorems:
             return {
                 "fact_name": fact.get("name"),
-                "is_valid": False,
-                "severity": "error",
-                "message": f"Факт «{fact.get('name')}» не найден в базе знаний",
-                "suggestion": "Проверьте название теоремы или укажите явное обоснование",
+                # Отсутствие факта в RAG само по себе не означает логическую ошибку.
+                "is_valid": True,
+                "severity": "info",
+                "message": f"Факт «{fact.get('name')}» не найден в RAG",
+                "suggestion": "Проверьте, что факт действительно есть в базе, если он критичен для доказательства",
                 "rag_references": [],
+                "report_missing_in_rag": True,
             }
         theorems_text = "\n\n".join(
             f"[{i + 1}] {t['name']} ({t.get('type', '?')}):\n{t['statement']}"
@@ -181,7 +212,7 @@ class FormulatorAgent:
                         "rag_references": ver.get("rag_references", []),
                     }
                 )
-                if not ver.get("is_valid", True):
+                if (not ver.get("is_valid", True)) or ver.get("report_missing_in_rag"):
                     remarks.append(
                         {
                             "step_id": idx,

@@ -2,6 +2,7 @@
 Векторное хранилище на ChromaDB: создание коллекции, добавление документов, поиск.
 """
 
+import re
 from typing import Any
 
 import chromadb
@@ -9,6 +10,7 @@ from chromadb.config import Settings
 
 from app.core.clients.db.rag.config import RAGConfig
 from app.core.clients.db.rag.embedder import Embedder, _make_chroma_embedding_function
+from app.core.clients.db.rag.loader import load_knowledge_from_path
 
 
 def _document_to_text(doc: dict[str, Any]) -> str:
@@ -40,6 +42,83 @@ class VectorStore:
         self._client = None
         self._collection = None
         self._embedder = Embedder(self.config.embedding_model)
+        self._knowledge_items_cache: list[dict[str, Any]] | None = None
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        text = (text or "").lower().strip()
+        text = re.sub(r"[^\w\s]+", " ", text, flags=re.UNICODE)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
+
+    def _get_knowledge_items(self) -> list[dict[str, Any]]:
+        if self._knowledge_items_cache is None:
+            self._knowledge_items_cache = load_knowledge_from_path(
+                self.config.knowledge_base_dir
+            )
+        return self._knowledge_items_cache
+
+    def _lexical_search(
+        self,
+        query: str,
+        top_k: int = 5,
+        type_filter: str | None = None,
+    ) -> list[dict[str, Any]]:
+        normalized_query = self._normalize_text(query)
+        if not normalized_query:
+            return []
+        query_tokens = set(normalized_query.split())
+        if not query_tokens:
+            return []
+
+        candidates: list[tuple[float, dict[str, Any]]] = []
+
+        for item in self._get_knowledge_items():
+            item_type = str(item.get("type", "")).strip().lower()
+            if type_filter and item_type != type_filter.strip().lower():
+                continue
+            name = str(item.get("name", ""))
+            statement = str(item.get("statement", ""))
+            hay_name = self._normalize_text(name)
+            hay_statement = self._normalize_text(statement)
+            if not hay_name and not hay_statement:
+                continue
+            name_tokens = set(hay_name.split())
+            st_tokens = set(hay_statement.split())
+            overlap_name = len(query_tokens & name_tokens)
+            overlap_statement = len(query_tokens & st_tokens)
+            if (
+                overlap_name == 0
+                and overlap_statement == 0
+                and normalized_query not in hay_name
+                and normalized_query not in hay_statement
+            ):
+                continue
+            score = 0.0
+            if normalized_query in hay_name:
+                score += 3.0
+            if normalized_query in hay_statement:
+                score += 1.0
+            score += overlap_name * 0.6 + overlap_statement * 0.2
+            if "theorem" in normalized_query and "theorem" in hay_name:
+                score += 0.8
+
+            candidates.append(
+                (
+                    score,
+                    {
+                        "type": item_type,
+                        "name": name,
+                        "statement": statement,
+                        "latex": str(item.get("latex", "")),
+                        "category": str(item.get("category", "")),
+                        # Bring lexical scores to the same [0,1]-like scale used in API.
+                        "score": round(min(0.99, 0.4 + score / 12.0), 4),
+                    },
+                )
+            )
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return [entry for _, entry in candidates[:top_k]]
 
     def _get_client(self) -> chromadb.PersistentClient:
         if self._client is None:
@@ -110,9 +189,8 @@ class VectorStore:
         type, name, statement, latex, category, score.
         type_filter: опционально ограничить тип (definition / axiom / theorem).
         """
+        out: list[dict[str, Any]] = []
         collection = self._get_collection(create_if_missing=False)
-        if collection is None:
-            return []
         where = None
         if type_filter and type_filter.strip().lower() in (
             "definition",
@@ -120,30 +198,44 @@ class VectorStore:
             "theorem",
         ):
             where = {"type": type_filter.strip().lower()}
-        query_embedding = self._embedder.embed_query(query)
-        result = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            where=where,
-            include=["metadatas", "distances"],
-        )
-        if not result or not result["metadatas"] or not result["metadatas"][0]:
-            return []
-        # Chroma возвращает L2 distance; преобразуем в подобие score (меньше расстояние — выше релевантность)
-        distances = result["distances"][0]
-        metadatas = result["metadatas"][0]
-        out = []
-        for meta, dist in zip(metadatas, distances):
-            # score: чем меньше distance, тем лучше; нормализуем в [0,1]-подобное
-            score = 1.0 / (1.0 + float(dist)) if dist is not None else 0.0
-            out.append(
-                {
-                    "type": meta.get("type", ""),
-                    "name": meta.get("name", ""),
-                    "statement": meta.get("statement", ""),
-                    "latex": meta.get("latex", ""),
-                    "category": meta.get("category", ""),
-                    "score": round(score, 4),
-                }
-            )
-        return out
+
+        if collection is not None:
+            try:
+                query_embedding = self._embedder.embed_query(query)
+                result = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=top_k,
+                    where=where,
+                    include=["metadatas", "distances"],
+                )
+                if result and result.get("metadatas") and result["metadatas"][0]:
+                    distances = result["distances"][0]
+                    metadatas = result["metadatas"][0]
+                    for meta, dist in zip(metadatas, distances):
+                        score = 1.0 / (1.0 + float(dist)) if dist is not None else 0.0
+                        out.append(
+                            {
+                                "type": meta.get("type", ""),
+                                "name": meta.get("name", ""),
+                                "statement": meta.get("statement", ""),
+                                "latex": meta.get("latex", ""),
+                                "category": meta.get("category", ""),
+                                "score": round(score, 4),
+                            }
+                        )
+            except Exception:
+                # ANN retrieval can fail for index reasons; lexical fallback below.
+                out = []
+
+        lexical = self._lexical_search(query=query, top_k=top_k, type_filter=type_filter)
+        if not out:
+            return lexical
+
+        merged: dict[str, dict[str, Any]] = {}
+        for item in out + lexical:
+            key = f"{item.get('type','')}|{item.get('name','')}"
+            prev = merged.get(key)
+            if prev is None or float(item.get("score", 0.0)) > float(prev.get("score", 0.0)):
+                merged[key] = item
+        final = sorted(merged.values(), key=lambda x: float(x.get("score", 0.0)), reverse=True)
+        return final[:top_k]

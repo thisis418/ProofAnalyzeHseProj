@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import asyncio
 from typing import Any
 
 import httpx
@@ -11,6 +12,9 @@ logger = logging.getLogger(__name__)
 
 
 class OllamaLLMClient(BaseLLMClient):
+    RETRY_ATTEMPTS = 3
+    RETRY_BASE_DELAY_SECONDS = 2.0
+
     def __init__(self, base_url: str, model: str, timeout: float = 180.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -101,13 +105,52 @@ class OllamaLLMClient(BaseLLMClient):
             "stream": False,
             "format": "json",
         }
-        response = await self._client.post("/api/generate", json=payload)
-        response.raise_for_status()
-        data = response.json()
-        raw = data.get("response", "")
-        if not raw:
-            return {"error": "empty_response"}
-        return self._parse_json_safe(raw)
+        last_error: str | None = None
+        for attempt in range(1, self.RETRY_ATTEMPTS + 1):
+            try:
+                response = await self._client.post("/api/generate", json=payload)
+                response.raise_for_status()
+                data = response.json()
+                raw = data.get("response", "")
+                if not raw:
+                    return {"error": "empty_response"}
+                return self._parse_json_safe(raw)
+            except httpx.ReadTimeout:
+                last_error = "ollama_timeout"
+                logger.warning(
+                    "Ollama request timeout (model=%s, attempt=%s/%s)",
+                    self.model,
+                    attempt,
+                    self.RETRY_ATTEMPTS,
+                )
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code if exc.response is not None else "unknown"
+                body_preview = (
+                    exc.response.text[:300] if exc.response is not None else ""
+                )
+                logger.error(
+                    "Ollama HTTP error: status=%s body(first 300)=%r",
+                    status,
+                    body_preview,
+                )
+                return {"error": f"ollama_http_error:{status}"}
+            except httpx.RequestError as exc:
+                last_error = "ollama_network_error"
+                logger.warning(
+                    "Ollama network error (attempt=%s/%s): %s",
+                    attempt,
+                    self.RETRY_ATTEMPTS,
+                    exc,
+                )
+            except Exception as exc:
+                logger.exception("Unexpected Ollama client error")
+                return {"error": f"ollama_unexpected_error:{exc}"}
+
+            if attempt < self.RETRY_ATTEMPTS:
+                delay = self.RETRY_BASE_DELAY_SECONDS * attempt
+                await asyncio.sleep(delay)
+
+        return {"error": last_error or "ollama_call_failed"}
 
     async def aclose(self) -> None:
         await self._client.aclose()
